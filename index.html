@@ -1,0 +1,1101 @@
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { 
+  Home,
+  Users, 
+  CreditCard, 
+  Shield, 
+  Menu, 
+  X,
+  Send,
+  User,
+  Bot,
+  Lock,
+  UserPlus,
+  QrCode as QrIcon,
+  Download,
+  RotateCcw,
+  MessageCircle,
+  Camera,
+  History,
+  Calendar,
+  Image as ImageIcon,
+  PhoneCall,
+  ChevronRight,
+  TrendingUp,
+  ArrowLeft,
+  Loader2,
+  Trash2,
+  Search,
+  Filter,
+  PlusCircle,
+  FileText,
+  Wifi,
+  CloudCheck,
+  Zap,
+  Sparkles,
+  MessageSquareQuote,
+  Volume2,
+  StopCircle,
+  Wand2
+} from 'lucide-react';
+
+// Firebase Imports
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  signInWithCustomToken, 
+  onAuthStateChanged 
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  addDoc, 
+  onSnapshot, 
+  deleteDoc,
+  updateDoc,
+  query,
+  orderBy
+} from 'firebase/firestore';
+
+// ==========================================
+// KONFIGURASI LOGO PPSI
+// ==========================================
+const LOGO_PPSI = "https://i.ibb.co.com/4wwytWdZ/logo-ppsi-new.png"; 
+
+// Inisialisasi Firebase
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'ppsi-digital-hub';
+
+const apiKey = "";
+
+// Helper untuk konversi Base64 PCM ke WAV (Untuk TTS Gemini)
+const pcmToWav = (base64PCM) => {
+  const binaryString = atob(base64PCM);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  
+  const wavHeader = new ArrayBuffer(44);
+  const view = new DataView(wavHeader);
+  
+  // RIFF chunk descriptor
+  view.setUint32(0, 0x52494646, false); // "RIFF"
+  view.setUint32(4, 36 + len, true); // File size
+  view.setUint32(8, 0x57415645, false); // "WAVE"
+  
+  // fmt sub-chunk
+  view.setUint32(12, 0x666d7420, false); // "fmt "
+  view.setUint32(16, 16, true); // Subchunk1Size (16 for PCM)
+  view.setUint16(20, 1, true); // AudioFormat (1 for PCM)
+  view.setUint16(22, 1, true); // NumChannels (1 channel)
+  view.setUint32(24, 24000, true); // SampleRate (24kHz standard for Gemini TTS)
+  view.setUint32(28, 24000 * 2, true); // ByteRate
+  view.setUint16(32, 2, true); // BlockAlign
+  view.setUint16(34, 16, true); // BitsPerSample
+  
+  // data sub-chunk
+  view.setUint32(36, 0x64617461, false); // "data"
+  view.setUint32(40, len, true); // Subchunk2Size
+  
+  const blob = new Blob([view, bytes], { type: 'audio/wav' });
+  return URL.createObjectURL(blob);
+};
+
+const App = () => {
+  // State aplikasi
+  const [activeTab, setActiveTab] = useState('home');
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+  const [loginCode, setLoginCode] = useState("");
+  const [toast, setToast] = useState({ show: false, message: '' });
+  
+  // State Database & Auth
+  const [user, setUser] = useState(null);
+  const [members, setMembers] = useState([]);
+  const [content, setContent] = useState({ sejarah: [], agenda: [], berita: [] });
+  const [isLoading, setIsLoading] = useState(true);
+
+  // State Pencarian & Filter
+  const [searchQuery, setSearchQuery] = useState("");
+  const [filterRegion, setFilterRegion] = useState("Semua");
+
+  // State Modals
+  const [isAddMemberModalOpen, setIsAddMemberModalOpen] = useState(false);
+  const [isAddContentModalOpen, setIsAddContentModalOpen] = useState(false);
+  const [contentTypeToAdd, setContentTypeToAdd] = useState('berita');
+  
+  const [isKTAModalOpen, setIsKTAModalOpen] = useState(false);
+  const [showBackSide, setShowBackSide] = useState(false);
+  const [selectedMemberKTA, setSelectedMemberKTA] = useState(null);
+
+  const [isReadModalOpen, setIsReadModalOpen] = useState(false);
+  const [selectedItem, setSelectedItem] = useState(null);
+  
+  const [newMember, setNewMember] = useState({ name: '', chairmanName: '', region: '', photo: null });
+  const [newContent, setNewContent] = useState({ title: '', body: '', date: '', category: '', image: null });
+  
+  // AI States
+  const [isGeneratingDraft, setIsGeneratingDraft] = useState(false); // Admin Draft
+  const [articleChatInput, setArticleChatInput] = useState(""); // Reader Chat
+  const [articleChatMessages, setArticleChatMessages] = useState([]); // Reader Chat
+  const [isArticleChatLoading, setIsArticleChatLoading] = useState(false); // Reader Chat
+  const [isPlayingAudio, setIsPlayingAudio] = useState(false); // TTS
+  const [isSynthesizing, setIsSynthesizing] = useState(false); // TTS Loading
+  const audioRef = useRef(null);
+
+  const memberPhotoInputRef = useRef(null);
+  const contentImageInputRef = useRef(null);
+
+  // Auth Initialization
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error("Auth error:", err);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  // Data Sync
+  useEffect(() => {
+    if (!user) return;
+
+    const membersRef = collection(db, 'artifacts', appId, 'public', 'data', 'members');
+    const unsubMembers = onSnapshot(membersRef, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ docId: doc.id, ...doc.data() }));
+      setMembers(data.sort((a, b) => a.name.localeCompare(b.name)));
+      setIsLoading(false);
+    });
+
+    const contentRef = collection(db, 'artifacts', appId, 'public', 'data', 'cms_content');
+    const unsubContent = onSnapshot(contentRef, (snapshot) => {
+      const allContent = snapshot.docs.map(doc => ({ docId: doc.id, ...doc.data() }));
+      setContent({
+        berita: allContent.filter(c => c.type === 'berita').sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt)),
+        agenda: allContent.filter(c => c.type === 'agenda').sort((a,b) => new Date(a.date) - new Date(b.date)),
+        sejarah: allContent.filter(c => c.type === 'sejarah').sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt)),
+      });
+    });
+
+    return () => { unsubMembers(); unsubContent(); };
+  }, [user]);
+
+  // Clean up audio when modal closes
+  useEffect(() => {
+    if (!isReadModalOpen) {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      setIsPlayingAudio(false);
+      setArticleChatMessages([]); // Reset chat context
+    }
+  }, [isReadModalOpen]);
+
+  const filteredMembers = useMemo(() => {
+    return members.filter(member => {
+      const matchesSearch = member.name?.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                           member.id?.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesRegion = filterRegion === "Semua" || member.region === filterRegion;
+      return matchesSearch && matchesRegion;
+    });
+  }, [members, searchQuery, filterRegion]);
+
+  const regions = useMemo(() => {
+    const uniqueRegions = [...new Set(members.map(m => m.region))];
+    return ["Semua", ...uniqueRegions.sort()];
+  }, [members]);
+
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [chatInput, setChatInput] = useState("");
+  const [chatMessages, setChatMessages] = useState([
+    { role: 'assistant', text: 'Salam Silat! Saya asisten digital PPSI. Ada yang bisa saya bantu?' }
+  ]);
+  const [isChatLoading, setIsChatLoading] = useState(false);
+  const chatEndRef = useRef(null);
+
+  const showNotification = (msg) => {
+    setToast({ show: true, message: msg });
+    setTimeout(() => setToast({ show: false, message: '' }), 3000);
+  };
+
+  const handleAdminLogin = (e) => {
+    e.preventDefault();
+    if (loginCode === "1234") {
+      setIsAdmin(true);
+      setIsLoginModalOpen(false);
+      setLoginCode("");
+      showNotification("Akses Admin Terbuka");
+    } else {
+      showNotification("PIN Salah!");
+    }
+  };
+
+  const handleAddMember = async (e) => {
+    e.preventDefault();
+    if (!user) return;
+    try {
+      const newId = `24.05.${String(members.length + 1).padStart(3, '0')}`;
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'members'), {
+        ...newMember, id: newId, status: 'Aktif', createdAt: new Date().toISOString()
+      });
+      setNewMember({ name: '', chairmanName: '', region: '', photo: null });
+      setIsAddMemberModalOpen(false);
+      showNotification("Data Anggota Berhasil Disimpan!");
+    } catch (err) { showNotification("Gagal menyimpan data."); }
+  };
+
+  const handleAddContent = async (e) => {
+    e.preventDefault();
+    if (!user) return;
+    try {
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'cms_content'), {
+        ...newContent,
+        type: contentTypeToAdd,
+        createdAt: new Date().toISOString()
+      });
+      setNewContent({ title: '', body: '', date: '', category: '', image: null });
+      setIsAddContentModalOpen(false);
+      showNotification(`${contentTypeToAdd.toUpperCase()} Berhasil Ditambahkan!`);
+    } catch (err) { showNotification("Gagal menambahkan konten."); }
+  };
+
+  // --- GEMINI API: ADMIN MAGIC DRAFT ---
+  const handleGenerateDraft = async () => {
+    if (!newContent.title) {
+      showNotification("Isi judul terlebih dahulu untuk membuat draft!");
+      return;
+    }
+    setIsGeneratingDraft(true);
+    try {
+      const prompt = `Anda adalah sekretaris profesional organisasi PPSI (Persatuan Pencak Silat Indonesia). Buatkan draf konten ${contentTypeToAdd} yang menarik, informatif, dan membangkitkan semangat budaya dengan Judul: "${newContent.title}". Gunakan Bahasa Indonesia yang baik dan benar. Panjang sekitar 2-3 paragraf.`;
+      
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }]
+        })
+      });
+      const data = await response.json();
+      const draft = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (draft) {
+        setNewContent(prev => ({ ...prev, body: draft }));
+        showNotification("Draft berhasil dibuat oleh AI! ✨");
+      } else {
+        showNotification("Gagal membuat draft.");
+      }
+    } catch (error) {
+      console.error(error);
+      showNotification("Terjadi kesalahan koneksi AI.");
+    } finally {
+      setIsGeneratingDraft(false);
+    }
+  };
+
+  // --- GEMINI API: ARTICLE CHAT (RAG Lite) ---
+  const handleArticleChat = async (e) => {
+    e.preventDefault();
+    if (!articleChatInput.trim()) return;
+
+    const userMsg = { role: 'user', text: articleChatInput };
+    setArticleChatMessages([...articleChatMessages, userMsg]);
+    setArticleChatInput("");
+    setIsArticleChatLoading(true);
+
+    try {
+      const context = `Konteks Artikel yang sedang dibaca pengguna:\nJudul: ${selectedItem.title}\nIsi: ${selectedItem.body}\n\n`;
+      const systemPrompt = "Anda adalah asisten cerdas PPSI. Jawab pertanyaan pengguna HANYA berdasarkan konteks artikel di atas. Jika tidak ada di artikel, jawab dengan sopan bahwa informasi tidak tersedia di artikel ini. Gunakan bahasa yang ramah.";
+      
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: context + "\n Pertanyaan: " + articleChatInput }] }],
+          systemInstruction: { parts: [{ text: systemPrompt }] }
+        })
+      });
+      const data = await response.json();
+      const aiResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || "Maaf, saya tidak dapat menjawab saat ini.";
+      
+      setArticleChatMessages(prev => [...prev, { role: 'assistant', text: aiResponse }]);
+    } catch (error) {
+      setArticleChatMessages(prev => [...prev, { role: 'assistant', text: "Gagal memproses pertanyaan." }]);
+    } finally {
+      setIsArticleChatLoading(false);
+    }
+  };
+
+  // --- GEMINI API: TEXT TO SPEECH ---
+  const handleTTS = async () => {
+    if (isPlayingAudio) {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      setIsPlayingAudio(false);
+      return;
+    }
+
+    setIsSynthesizing(true);
+    try {
+      // Limit text length for TTS demo stability
+      const textToRead = `Judul: ${selectedItem.title}. ${selectedItem.body}`.substring(0, 500); 
+
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: textToRead }] }],
+          generationConfig: {
+            responseModalities: ["AUDIO"],
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } } }
+          }
+        })
+      });
+
+      const data = await response.json();
+      const base64Audio = data.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+
+      if (base64Audio) {
+        const wavUrl = pcmToWav(base64Audio);
+        const audio = new Audio(wavUrl);
+        audioRef.current = audio;
+        audio.onended = () => setIsPlayingAudio(false);
+        audio.play();
+        setIsPlayingAudio(true);
+      } else {
+        showNotification("Gagal memuat audio.");
+      }
+    } catch (error) {
+      console.error(error);
+      showNotification("Layanan suara sedang sibuk.");
+    } finally {
+      setIsSynthesizing(false);
+    }
+  };
+
+  const handleDeleteContent = async (docId) => {
+    if (!isAdmin) return;
+    try {
+      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'cms_content', docId));
+      showNotification("Konten dihapus.");
+    } catch (err) { showNotification("Gagal menghapus."); }
+  };
+
+  const handleViewKTA = (member) => {
+    setSelectedMemberKTA(member);
+    setShowBackSide(false);
+    setIsKTAModalOpen(true);
+  };
+
+  const handleReadItem = (item) => {
+    setSelectedItem(item);
+    setArticleChatMessages([{ role: 'assistant', text: 'Halo! Saya sudah membaca artikel ini. Ada yang ingin ditanyakan?' }]);
+    setIsReadModalOpen(true);
+  };
+
+  const sendMessageToAI = async (userText) => {
+    if (!userText.trim()) return;
+    setChatMessages([...chatMessages, { role: 'user', text: userText }]);
+    setChatInput("");
+    setIsChatLoading(true);
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: userText }] }],
+          systemInstruction: { parts: [{ text: "Anda adalah asisten PPSI (Persatuan Pencak Silat Indonesia). Jawablah dengan ramah, sopan, dan menggunakan Bahasa Indonesia yang baik." }] }
+        })
+      });
+      const data = await response.json();
+      const aiText = data.candidates?.[0]?.content?.parts?.[0]?.text || "Maaf, terjadi kendala teknis.";
+      setChatMessages(prev => [...prev, { role: 'assistant', text: aiText }]);
+    } catch (error) {
+      setChatMessages(prev => [...prev, { role: 'assistant', text: "Layanan asisten sedang sibuk." }]);
+    } finally { setIsChatLoading(false); }
+  };
+
+  const getQRCodeUrl = (text) => `https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(text)}`;
+  const getBarcodeUrl = (text) => `https://bwipjs-api.metafloor.com/?bcid=code128&text=${encodeURIComponent(text)}&scale=1&height=10&rotate=N&includetext=false`;
+
+  const menuItems = [
+    { id: 'home', label: 'Beranda', icon: Home },
+    { id: 'members', label: 'Data Anggota', icon: Users },
+    { id: 'kta', label: 'KTA Digital', icon: CreditCard },
+    { id: 'sejarah', label: 'Sejarah PPSI', icon: History },
+    { id: 'agenda', label: 'Agenda & Berita', icon: Calendar },
+    { id: 'contact', label: 'Hubungi Kami', icon: PhoneCall },
+  ];
+
+  return (
+    <div className="flex min-h-screen bg-slate-50 text-slate-900 overflow-hidden font-sans relative">
+      {toast.show && (
+        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900 text-white px-6 py-3 rounded-full shadow-2xl animate-bounce text-sm font-bold">
+          {toast.message}
+        </div>
+      )}
+
+      {/* Sidebar */}
+      <aside className={`fixed lg:static inset-y-0 left-0 w-64 bg-white border-r z-[100] transform transition-transform duration-300 ease-in-out ${isMobileMenuOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full lg:translate-x-0'}`}>
+        <div className="p-6 flex flex-col h-full">
+          <div className="flex items-center justify-between mb-10">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-white border rounded-lg p-1 flex items-center justify-center overflow-hidden">
+                 {/* Latar belakang logo di sidebar diubah ke putih agar transparansi terlihat bersih */}
+                 <img src={LOGO_PPSI} alt="Logo PPSI" className="w-full h-full object-contain" />
+              </div>
+              <span className="text-2xl font-black italic tracking-tighter text-green-700">PPSI</span>
+            </div>
+            <button onClick={() => setIsMobileMenuOpen(false)} className="lg:hidden p-2 text-slate-400 hover:bg-slate-100 rounded-full">
+              <X size={20} />
+            </button>
+          </div>
+          <nav className="flex-1 space-y-1 overflow-y-auto pr-2 custom-scrollbar">
+            <p className="text-[10px] font-black uppercase text-slate-400 mb-2 px-4 tracking-widest">Menu Utama</p>
+            {menuItems.map((item) => (
+              <button 
+                key={item.id}
+                onClick={() => { setActiveTab(item.id); setIsMobileMenuOpen(false); }} 
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl font-bold transition-all ${activeTab === item.id ? 'bg-green-700 text-white shadow-lg shadow-green-100' : 'text-slate-500 hover:bg-slate-100'}`}
+              >
+                <item.icon size={18} /> {item.label}
+              </button>
+            ))}
+            {isAdmin && (
+               <div className="mt-4 pt-4 border-t">
+                  <p className="text-[10px] font-black uppercase text-green-600 mb-2 px-4 tracking-widest">Admin CMS</p>
+                  <button onClick={() => { setActiveTab('manage_content'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl font-bold transition-all ${activeTab === 'manage_content' ? 'bg-green-700 text-white' : 'text-slate-500 hover:bg-slate-100'}`}>
+                    <PlusCircle size={18} /> Kelola Konten
+                  </button>
+               </div>
+            )}
+          </nav>
+          <div className="mt-auto pt-6 border-t">
+            {!isAdmin ? (
+              <button onClick={() => { setIsLoginModalOpen(true); setIsMobileMenuOpen(false); }} className="w-full py-3 bg-slate-900 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 active:scale-95"><Lock size={14} /> Login Admin</button>
+            ) : (
+              <button onClick={() => setIsAdmin(false)} className="w-full py-3 bg-red-50 text-red-600 rounded-xl text-xs font-bold border border-red-100 active:scale-95">Keluar Admin</button>
+            )}
+          </div>
+        </div>
+      </aside>
+
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col h-screen overflow-hidden">
+        <header className="h-16 bg-white border-b flex items-center justify-between px-6 shrink-0 relative z-10">
+          <button className="lg:hidden text-slate-600 p-2 -ml-2 hover:bg-slate-50 rounded-lg" onClick={() => setIsMobileMenuOpen(true)}>
+            <Menu size={24} />
+          </button>
+          <div className="text-[10px] md:text-xs font-bold text-slate-400 uppercase tracking-widest">Persatuan Pencak Silat Indonesia</div>
+          <div className="flex items-center gap-3">
+             {isAdmin && <span className="bg-green-100 text-green-700 text-[10px] px-2 py-1 rounded-full font-black uppercase tracking-tighter">Mode Admin</span>}
+             <div className="w-8 h-8 rounded-full bg-white flex items-center justify-center border p-0.5 overflow-hidden">
+                {/* Latar belakang logo di header diubah ke putih */}
+                <img src={LOGO_PPSI} alt="PPSI" className="w-full h-full object-contain" />
+             </div>
+          </div>
+        </header>
+
+        <main className="flex-1 overflow-y-auto p-4 md:p-6 custom-scrollbar scroll-smooth">
+          <div className="max-w-5xl mx-auto pb-20">
+            
+            {activeTab === 'home' && (
+              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4">
+                <div className="bg-green-700 rounded-[2rem] p-8 text-white relative overflow-hidden shadow-2xl shadow-green-100 min-h-[220px] flex flex-col justify-center">
+                  <div className="relative z-10">
+                    <h1 className="text-3xl md:text-4xl font-black italic uppercase leading-tight tracking-tight">Selamat Datang di<br/>Pusat Digital PPSI</h1>
+                    <div className="mt-4 flex items-center gap-2">
+                      <div className="bg-white/20 backdrop-blur-md px-3 py-1.5 rounded-full flex items-center gap-2 border border-white/10">
+                        <div className="relative flex h-2 w-2">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-green-300"></span>
+                        </div>
+                        <Wifi size={14} className="text-white" />
+                        <span className="text-[10px] font-black uppercase tracking-widest text-white">Cloud Active</span>
+                      </div>
+                    </div>
+                  </div>
+                  {/* Watermark logo di beranda */}
+                  <img src={LOGO_PPSI} alt="PPSI Logo Background" className="absolute -right-12 -bottom-12 w-64 h-64 opacity-10 rotate-12 pointer-events-none object-contain" />
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                   <div className="space-y-4">
+                      <h3 className="text-xs font-black uppercase tracking-widest text-slate-400">Berita Terbaru</h3>
+                      {content.berita.length === 0 ? (
+                        <div className="bg-white p-6 rounded-2xl border text-slate-400 text-xs italic text-center">Belum ada berita.</div>
+                      ) : (
+                        content.berita.slice(0, 3).map(b => (
+                          <div key={b.docId} onClick={() => handleReadItem(b)} className="bg-white rounded-2xl border hover:shadow-md transition-all overflow-hidden cursor-pointer group">
+                            {b.image && <img src={b.image} alt={b.title} className="w-full h-32 object-cover border-b group-hover:scale-105 transition-transform duration-500" />}
+                            <div className="p-5">
+                              <h4 className="font-black text-sm uppercase mb-1 group-hover:text-green-700">{b.title}</h4>
+                              <p className="text-xs text-slate-500 line-clamp-2 mb-3 leading-relaxed">{b.body}</p>
+                              <span className="text-[10px] bg-slate-100 px-2 py-1 rounded-md font-bold">{new Date(b.createdAt).toLocaleDateString()}</span>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                   </div>
+                   <div className="space-y-4">
+                      <h3 className="text-xs font-black uppercase tracking-widest text-slate-400">Agenda Terdekat</h3>
+                      {content.agenda.length === 0 ? (
+                        <div className="bg-white p-6 rounded-2xl border text-slate-400 text-xs italic text-center">Belum ada agenda.</div>
+                      ) : (
+                        content.agenda.slice(0, 3).map(a => (
+                          <div key={a.docId} onClick={() => handleReadItem(a)} className="bg-green-50 p-5 rounded-2xl border border-green-100 flex gap-4 cursor-pointer hover:bg-green-100 transition-colors group">
+                             <div className="bg-green-700 text-white w-12 h-12 rounded-xl flex flex-col items-center justify-center shrink-0 shadow-lg shadow-green-100 group-hover:scale-110 transition-transform">
+                                <span className="text-xs font-black">{new Date(a.date).getDate()}</span>
+                                <span className="text-[8px] font-bold uppercase">{new Date(a.date).toLocaleString('default', { month: 'short' })}</span>
+                             </div>
+                             <div className="flex-1">
+                                <h4 className="font-black text-sm uppercase group-hover:text-green-900">{a.title}</h4>
+                                <p className="text-[10px] text-green-700 font-black uppercase tracking-tighter">{a.category || 'Umum'}</p>
+                             </div>
+                          </div>
+                        ))
+                      )}
+                   </div>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'members' && (
+              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4">
+                <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+                  <h2 className="text-2xl font-black italic uppercase text-slate-800 tracking-tight">Database Pesilat</h2>
+                  {isAdmin && (
+                    <button onClick={() => setIsAddMemberModalOpen(true)} className="bg-green-700 text-white px-6 py-3 rounded-xl flex items-center justify-center gap-2 text-sm font-bold shadow-xl">
+                      <UserPlus size={18} /> Registrasi Baru
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex flex-col md:flex-row gap-3">
+                  <div className="flex-1 relative">
+                    <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input type="text" placeholder="Cari Nama atau ID..." className="w-full bg-white border rounded-xl pl-10 pr-4 py-3 text-sm font-bold shadow-sm" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
+                  </div>
+                  <select className="bg-white border rounded-xl px-4 py-3 text-sm font-bold outline-none shadow-sm" value={filterRegion} onChange={(e) => setFilterRegion(e.target.value)}>
+                    {regions.map(r => <option key={r} value={r}>{r}</option>)}
+                  </select>
+                </div>
+
+                <div className="bg-white rounded-2xl border overflow-x-auto shadow-sm">
+                   {isLoading ? <div className="p-12 text-center"><Loader2 className="animate-spin mx-auto text-green-700" /></div> : (
+                     <table className="w-full text-left min-w-[500px]">
+                        <thead className="bg-slate-50 border-b text-[10px] font-black uppercase text-slate-400">
+                           <tr><th className="px-6 py-4">Pesilat</th><th className="px-6 py-4">Wilayah</th><th className="px-6 py-4 text-right">Opsi</th></tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                           {filteredMembers.map(m => (
+                             <tr key={m.docId} className="hover:bg-slate-50 transition-colors">
+                               <td className="px-6 py-4 flex items-center gap-3">
+                                  <div className="w-8 h-8 rounded-lg bg-slate-100 overflow-hidden border">
+                                    {m.photo ? <img src={m.photo} className="w-full h-full object-cover" /> : <User size={14} className="m-auto mt-2 text-slate-300" />}
+                                  </div>
+                                  <div className="text-xs font-bold">{m.name}</div>
+                               </td>
+                               <td className="px-6 py-4 text-[10px] font-bold uppercase">{m.region}</td>
+                               <td className="px-6 py-4 text-right">
+                                  <button onClick={() => handleViewKTA(m)} className="bg-yellow-400 text-slate-900 px-3 py-1 rounded-md text-[10px] font-black uppercase italic">KTA</button>
+                               </td>
+                             </tr>
+                           ))}
+                        </tbody>
+                     </table>
+                   )}
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'sejarah' && (
+              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4">
+                 <h2 className="text-2xl font-black italic uppercase text-slate-800">Sejarah PPSI</h2>
+                 {content.sejarah.length === 0 ? (
+                   <div className="bg-white p-12 rounded-3xl border text-center space-y-4">
+                      <History size={48} className="mx-auto text-slate-200" />
+                      <p className="text-slate-400 italic text-sm">Konten sejarah sedang dalam proses penyusunan.</p>
+                   </div>
+                 ) : (
+                   <div className="space-y-8">
+                      {content.sejarah.map((s) => (
+                        <div key={s.docId} onClick={() => handleReadItem(s)} className="bg-white rounded-3xl border overflow-hidden shadow-sm cursor-pointer hover:shadow-md transition-shadow group">
+                           {s.image && <img src={s.image} alt={s.title} className="w-full h-64 object-cover group-hover:scale-[1.02] transition-transform duration-500" />}
+                           <div className="p-8">
+                             <h3 className="text-xl font-black uppercase mb-4 text-green-700 group-hover:text-green-800">{s.title}</h3>
+                             <p className="text-slate-600 line-clamp-3 text-sm leading-relaxed">{s.body}</p>
+                             <div className="mt-6 flex items-center justify-between">
+                               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Baca Selengkapnya <ChevronRight size={10} className="inline ml-1" /></span>
+                               <span className="text-[10px] font-bold text-slate-400">{new Date(s.createdAt).toLocaleDateString()}</span>
+                             </div>
+                           </div>
+                        </div>
+                      ))}
+                   </div>
+                 )}
+              </div>
+            )}
+
+            {activeTab === 'agenda' && (
+              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4">
+                 <h2 className="text-2xl font-black italic uppercase text-slate-800">Agenda & Berita</h2>
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
+                    <div className="space-y-6">
+                       <h3 className="font-black uppercase text-xs tracking-widest text-slate-400 flex items-center gap-2">
+                         <FileText size={14} /> List Berita
+                       </h3>
+                       {content.berita.length === 0 ? (
+                         <p className="text-xs italic text-slate-400">Belum ada berita yang diterbitkan.</p>
+                       ) : (
+                         content.berita.map(b => (
+                           <div key={b.docId} onClick={() => handleReadItem(b)} className="bg-white rounded-2xl border overflow-hidden shadow-sm hover:shadow-md transition-shadow cursor-pointer group">
+                              {b.image && <img src={b.image} className="w-full h-44 object-cover" />}
+                              <div className="p-6">
+                                <h4 className="font-black uppercase text-sm mb-2 text-slate-800 group-hover:text-green-700">{b.title}</h4>
+                                <p className="text-xs text-slate-600 line-clamp-2 mb-4 leading-relaxed">{b.body}</p>
+                                <span className="text-[10px] font-bold text-slate-400 flex items-center gap-1">
+                                  <Calendar size={10} /> {new Date(b.createdAt).toLocaleDateString()}
+                                </span>
+                              </div>
+                           </div>
+                         ))
+                       )}
+                    </div>
+                    <div className="space-y-6">
+                       <h3 className="font-black uppercase text-xs tracking-widest text-slate-400 flex items-center gap-2">
+                         <Calendar size={14} /> Kalender Kegiatan
+                       </h3>
+                       {content.agenda.length === 0 ? (
+                         <p className="text-xs italic text-slate-400">Belum ada agenda terdekat.</p>
+                       ) : (
+                         content.agenda.map(a => (
+                           <div key={a.docId} onClick={() => handleReadItem(a)} className="bg-white rounded-2xl border overflow-hidden shadow-sm hover:shadow-md transition-shadow cursor-pointer">
+                              <div className="flex gap-4 items-start p-4 bg-green-50/30">
+                                <div className="w-14 h-14 bg-green-700 text-white rounded-2xl flex flex-col items-center justify-center shrink-0 shadow-lg shadow-green-100">
+                                   <span className="text-lg font-black leading-none">{new Date(a.date).getDate()}</span>
+                                   <span className="text-[10px] font-bold uppercase">{new Date(a.date).toLocaleString('default', { month: 'short' })}</span>
+                                </div>
+                                <div className="flex-1">
+                                   <h4 className="font-black uppercase text-xs mb-1 text-slate-800">{a.title}</h4>
+                                   <p className="text-[10px] text-green-700 font-black uppercase tracking-tight">{a.category || 'Umum'}</p>
+                                </div>
+                              </div>
+                              {a.image && <img src={a.image} className="w-full h-36 object-cover" />}
+                           </div>
+                         ))
+                       )}
+                    </div>
+                 </div>
+              </div>
+            )}
+
+            {activeTab === 'manage_content' && isAdmin && (
+              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                   <h2 className="text-2xl font-black italic uppercase text-slate-800">Manajemen Konten</h2>
+                   <div className="flex flex-wrap gap-2">
+                      <button onClick={() => { setContentTypeToAdd('berita'); setIsAddContentModalOpen(true); }} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase shadow-lg shadow-blue-100">+ Berita</button>
+                      <button onClick={() => { setContentTypeToAdd('agenda'); setIsAddContentModalOpen(true); }} className="bg-green-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase shadow-lg shadow-green-100">+ Agenda</button>
+                      <button onClick={() => { setContentTypeToAdd('sejarah'); setIsAddContentModalOpen(true); }} className="bg-slate-800 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase shadow-lg shadow-slate-100">+ Sejarah</button>
+                   </div>
+                </div>
+
+                <div className="bg-white rounded-3xl border overflow-x-auto shadow-sm">
+                   <table className="w-full text-left text-xs min-w-[500px]">
+                      <thead className="bg-slate-50 border-b font-black uppercase text-slate-400">
+                         <tr><th className="px-6 py-4">Tipe</th><th className="px-6 py-4">Judul Konten</th><th className="px-6 py-4 text-right">Opsi</th></tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                         {[...content.berita, ...content.agenda, ...content.sejarah].map(item => (
+                           <tr key={item.docId} className="hover:bg-slate-50">
+                              <td className="px-6 py-4">
+                                <span className={`px-2 py-1 rounded font-black text-[9px] uppercase ${item.type === 'berita' ? 'bg-blue-100 text-blue-700' : item.type === 'agenda' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-700'}`}>
+                                  {item.type}
+                                </span>
+                              </td>
+                              <td className="px-6 py-4 font-bold uppercase text-slate-700">{item.title}</td>
+                              <td className="px-6 py-4 text-right flex items-center justify-end gap-2">
+                                 <button onClick={() => handleReadItem(item)} className="text-slate-400 hover:text-green-600 p-2"><FileText size={16}/></button>
+                                 <button onClick={() => handleDeleteContent(item.docId)} className="text-slate-300 hover:text-red-500 transition-colors p-2"><Trash2 size={16} /></button>
+                              </td>
+                           </tr>
+                         ))}
+                      </tbody>
+                   </table>
+                </div>
+              </div>
+            )}
+          </div>
+        </main>
+
+        {/* --- MODAL BACA DETAIL (DENGAN TTS & AI CHAT) --- */}
+        {isReadModalOpen && selectedItem && (
+          <div className="fixed inset-0 z-[800] flex items-center justify-center p-4 backdrop-blur-md bg-slate-900/60">
+            <div className="bg-white w-full max-w-2xl rounded-[2rem] shadow-2xl flex flex-col max-h-[90vh] overflow-hidden animate-in zoom-in-95 duration-300">
+              <div className="p-6 border-b flex items-center justify-between shrink-0 bg-white">
+                <div>
+                   <span className="text-[10px] font-black uppercase tracking-widest text-green-700 mb-1 block">{selectedItem.type}</span>
+                   <h3 className="text-lg font-black uppercase italic tracking-tight truncate max-w-[200px] sm:max-w-md">{selectedItem.title}</h3>
+                </div>
+                <div className="flex items-center gap-2">
+                   {/* TTS Button */}
+                   <button 
+                     onClick={handleTTS} 
+                     disabled={isSynthesizing}
+                     className={`p-2 rounded-full transition-all ${isPlayingAudio ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-600 hover:bg-green-100 hover:text-green-700'}`}
+                   >
+                     {isSynthesizing ? <Loader2 size={20} className="animate-spin" /> : isPlayingAudio ? <StopCircle size={20} /> : <Volume2 size={20} />}
+                   </button>
+                   <button onClick={() => setIsReadModalOpen(false)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-full transition-colors"><X size={24} /></button>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto custom-scrollbar p-6 md:p-8">
+                 {selectedItem.image && (
+                   <img src={selectedItem.image} alt={selectedItem.title} className="w-full h-auto max-h-72 object-cover rounded-2xl shadow-lg mb-8" />
+                 )}
+                 
+                 {selectedItem.type === 'agenda' && (
+                   <div className="flex items-center gap-4 mb-8 p-4 bg-green-50 rounded-2xl border border-green-100">
+                      <Calendar className="text-green-700" size={24} />
+                      <div>
+                        <p className="text-[10px] font-black uppercase text-green-700 leading-none">Waktu Pelaksanaan</p>
+                        <p className="text-sm font-bold">{new Date(selectedItem.date).toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+                      </div>
+                   </div>
+                 )}
+
+                 <div className="prose prose-slate max-w-none mb-10">
+                    <div className="text-slate-600 leading-[1.8] text-base whitespace-pre-wrap font-medium">
+                       {selectedItem.body}
+                    </div>
+                 </div>
+
+                 {/* --- GEMINI AI ARTICLE CHAT --- */}
+                 <div className="bg-slate-50 rounded-2xl p-6 border border-slate-200">
+                    <div className="flex items-center gap-2 mb-4">
+                       <MessageSquareQuote className="text-green-600" size={20} />
+                       <h4 className="text-xs font-black uppercase tracking-wider text-slate-700">Tanya AI Tentang Artikel Ini</h4>
+                    </div>
+                    
+                    <div className="bg-white border rounded-xl h-40 overflow-y-auto p-4 mb-3 custom-scrollbar space-y-3">
+                       {articleChatMessages.map((m, i) => (
+                         <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                           <div className={`max-w-[85%] text-xs p-3 rounded-xl ${m.role === 'user' ? 'bg-green-600 text-white' : 'bg-slate-100 text-slate-700'}`}>
+                             {m.text}
+                           </div>
+                         </div>
+                       ))}
+                       {isArticleChatLoading && <div className="text-xs italic text-slate-400">Sedang mengetik...</div>}
+                    </div>
+
+                    <form onSubmit={handleArticleChat} className="flex gap-2">
+                       <input 
+                         type="text" 
+                         className="flex-1 bg-white border rounded-xl px-4 text-xs focus:ring-2 ring-green-500 outline-none" 
+                         placeholder="Misal: Kapan acara ini dimulai? / Siapa tokoh utamanya?" 
+                         value={articleChatInput}
+                         onChange={(e) => setArticleChatInput(e.target.value)}
+                       />
+                       <button type="submit" disabled={isArticleChatLoading} className="bg-slate-800 text-white p-3 rounded-xl hover:bg-slate-700 transition-colors">
+                          <Send size={14} />
+                       </button>
+                    </form>
+                 </div>
+              </div>
+
+              <div className="p-4 bg-slate-50 border-t flex items-center justify-between shrink-0 text-[10px] font-bold text-slate-400 uppercase tracking-widest px-8">
+                 <span>Digital Hub PPSI</span>
+                 <span>{new Date(selectedItem.createdAt || Date.now()).toLocaleDateString()}</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* --- MODAL KTA DIGITAL --- */}
+        {isKTAModalOpen && selectedMemberKTA && (
+          <div className="fixed inset-0 z-[500] flex items-center justify-center p-4 backdrop-blur-md bg-slate-900/60">
+            <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl p-6 relative animate-in fade-in zoom-in-95">
+              <button onClick={() => setIsKTAModalOpen(false)} className="absolute top-4 right-4 p-2 text-slate-400 hover:text-red-500 transition-colors"><X size={24} /></button>
+              <h3 className="text-xl font-black italic uppercase mb-6 text-slate-800 tracking-tighter">KTA PPSI Digital</h3>
+
+              <div className="relative aspect-[1.58/1] w-full mb-6 perspective-1000">
+                <div className={`relative w-full h-full transition-all duration-700 preserve-3d cursor-pointer ${showBackSide ? 'rotate-y-180' : ''}`} onClick={() => setShowBackSide(!showBackSide)}>
+                  
+                  {/* FRONT SIDE (DEPAN) */}
+                  <div className="absolute inset-0 backface-hidden rounded-xl border-2 border-black overflow-hidden flex flex-col bg-yellow-400 text-black shadow-inner">
+                    <div className="h-4 bg-green-700 w-full shrink-0"></div>
+                    <div className="px-4 py-2 flex items-center justify-between shrink-0">
+                      <div className="flex items-center gap-2">
+                         <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center p-1 border border-black/10 overflow-hidden">
+                            {/* Logo latar belakang putih pada KTA agar tetap rapi */}
+                            <img src={LOGO_PPSI} alt="Logo" className="w-full h-full object-contain" />
+                         </div>
+                         <div className="leading-none">
+                            <p className="text-[6px] font-black uppercase text-green-900">Dewan Pimpinan Pusat</p>
+                            <p className="text-[9px] font-black uppercase leading-tight tracking-tight">Persatuan Pencak Silat Indonesia</p>
+                         </div>
+                      </div>
+                      <div className="relative w-9 h-9 flex items-center justify-center">
+                        <svg className="w-full h-full" viewBox="0 0 100 100">
+                          <defs><path id="circlePathFixed" d="M 50, 50 m -37, 0 a 37,37 0 1,1 74,0 a 37,37 0 1,1 -74,0" /></defs>
+                          <text className="text-[12px] font-black uppercase fill-green-900 tracking-[0.05em]">
+                            <textPath href="#circlePathFixed">Budi Bakti Sakti • Budi Bakti Sakti • </textPath>
+                          </text>
+                        </svg>
+                      </div>
+                    </div>
+                    <div className="w-full h-[1px] bg-black/10"></div>
+                    <div className="flex-1 px-3 py-2 flex gap-4 relative items-start">
+                       <div className="w-[100px] h-[105px] bg-yellow-500/20 border-2 border-green-800/20 rounded-xl overflow-hidden shrink-0 shadow-md transform -mt-4 ml-0.5 relative z-10">
+                          {selectedMemberKTA.photo ? <img src={selectedMemberKTA.photo} className="w-full h-full object-cover" alt="Foto" /> : <div className="w-full h-full flex items-center justify-center bg-yellow-500/10"><User size={32} className="text-yellow-900/20" /></div>}
+                       </div>
+                       <div className="flex-1 space-y-2 -mt-4">
+                          <div className="border-b border-black/10 pb-0.5 mb-1.5"><p className="text-[7px] font-black italic uppercase tracking-widest text-green-900 leading-none">Kartu Tanda Anggota</p></div>
+                          <div className="space-y-2">
+                             <div><p className="text-[5.5px] font-bold uppercase text-slate-600 mb-0.5">Nama Pesilat</p><p className="uppercase text-[10.5px] leading-tight font-black tracking-tight">{selectedMemberKTA.name}</p></div>
+                             <div><p className="text-[5.5px] font-bold uppercase text-slate-600 mb-0.5">No. Anggota</p><p className="leading-none text-[9px] font-black">{selectedMemberKTA.id}</p></div>
+                             <div><p className="text-[5.5px] font-bold uppercase text-slate-600 mb-0.5">Wilayah/Provinsi</p><p className="leading-none uppercase text-[9px] font-black">{selectedMemberKTA.region}</p></div>
+                          </div>
+                       </div>
+                       <div className="absolute top-14 right-3 text-center flex flex-col items-center">
+                          <div className="bg-white p-1 border border-black/20 rounded shadow-sm flex items-center justify-center w-11 h-11"><img src={getQRCodeUrl(`KTA:${selectedMemberKTA.id}`)} alt="QR" className="w-full h-full object-contain mix-blend-multiply" /></div>
+                          <p className="text-[4px] font-bold mt-1 uppercase text-slate-600">Scan Validasi</p>
+                       </div>
+                    </div>
+                    <div className="h-4 bg-green-700 w-full shrink-0"></div>
+                  </div>
+
+                  {/* BACK SIDE (BELAKANG) */}
+                  <div className="absolute inset-0 backface-hidden rotate-y-180 rounded-xl border-2 border-black overflow-hidden flex flex-col bg-yellow-400 text-black shadow-inner">
+                    <div className="h-4 bg-green-700 w-full shrink-0"></div>
+                    <div className="px-4 pt-2 pb-1 text-center bg-green-50/20">
+                       <p className="text-[10px] font-black uppercase leading-none tracking-tighter text-green-900">CIRI ANGGOTA PPSI</p>
+                       <p className="text-[6px] font-bold italic text-slate-600 mt-0.5">Perkataan dan perbuatan selalu sesuai dengan:</p>
+                    </div>
+                    <div className="w-full h-[1px] bg-black/10"></div>
+                    <div className="flex-1 flex flex-col px-4 py-1.5 gap-1 justify-center relative">
+                      {/* Watermark Logo transparan di belakang kartu */}
+                      <div className="absolute inset-0 flex items-center justify-center opacity-10 pointer-events-none">
+                         <img src={LOGO_PPSI} className="w-24 h-24 object-contain" alt="Watermark" />
+                      </div>
+                      
+                      <div className="flex items-center gap-2 py-0.5 relative z-10">
+                        <div className="shrink-0"><Shield size={8} className="text-green-800" fill="currentColor" /></div>
+                        <div className="flex items-baseline gap-1.5 overflow-hidden leading-none">
+                          <p className="text-[7.5px] font-black text-green-900 uppercase">Trilogi PPSI:</p>
+                          <p className="text-[9px] font-black italic tracking-wide text-slate-800 truncate">Budi - Bakti - Sakti</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 py-0.5 relative z-10">
+                        <div className="shrink-0"><Shield size={8} className="text-green-800" fill="currentColor" /></div>
+                        <div className="flex items-baseline gap-1.5 overflow-hidden leading-none">
+                          <p className="text-[7.5px] font-black text-green-900 uppercase">Tekad PPSI:</p>
+                          <p className="text-[7.5px] font-bold italic text-slate-800 tracking-tight whitespace-nowrap overflow-hidden">Akur Jeung Dulur, Panceg 'na Galur, Ngajaga Lembur</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 py-0.5 relative z-10">
+                        <div className="shrink-0"><Shield size={8} className="text-green-800" fill="currentColor" /></div>
+                        <div className="flex items-baseline gap-1.5 overflow-hidden leading-none">
+                          <p className="text-[7.5px] font-black text-green-900 uppercase">Papagon PPSI:</p>
+                          <p className="text-[9px] font-black italic tracking-wide text-slate-800 truncate">Sholat - Silat - Siliwangi</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="px-4 pb-4 flex justify-between items-end shrink-0 gap-4">
+                       <div className="text-center flex-1">
+                          <p className="text-[5px] font-black uppercase text-slate-500 leading-none mb-2">Ketua Umum DPP PPSI</p>
+                          <div className="w-full h-4 flex items-center justify-center overflow-hidden mix-blend-multiply mb-0.5">
+                             <img src={getBarcodeUrl("GALIH SANTIKA")} alt="Barcode" className="w-full h-full object-contain" />
+                          </div>
+                          <div className="relative border-t border-black pt-0.5"><p className="text-[7px] font-black italic truncate leading-tight">Galih Santika, S.S, M.Si</p></div>
+                       </div>
+                       <div className="text-center flex-1">
+                          <p className="text-[5px] font-black uppercase text-slate-500 leading-none mb-1">Ketua DPW PPSI</p>
+                          <p className="text-[5px] font-bold uppercase text-green-800 leading-none truncate mb-1">{selectedMemberKTA.region}</p>
+                          <div className="w-full h-4 flex items-center justify-center overflow-hidden mix-blend-multiply mb-0.5">
+                             <img src={getBarcodeUrl(selectedMemberKTA.chairmanName?.toUpperCase() || "DPW")} alt="Barcode" className="w-full h-full object-contain" />
+                          </div>
+                          <div className="relative border-t border-black pt-0.5"><p className="text-[7px] font-black italic uppercase truncate leading-tight">{selectedMemberKTA.chairmanName}</p></div>
+                       </div>
+                    </div>
+                    <div className="h-4 bg-green-700 w-full shrink-0"></div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex gap-2">
+                 <button onClick={() => setShowBackSide(!showBackSide)} className="flex-1 py-3 bg-slate-900 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-transform active:scale-90"><RotateCcw size={16} /> Balik Kartu</button>
+                 <button className="flex-1 py-3 bg-green-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-lg active:scale-90 transition-transform"><Download size={16} /> Simpan Digital</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* CMS Add Content Modal (DENGAN MAGIC DRAFT) */}
+        {isAddContentModalOpen && (
+          <div className="fixed inset-0 z-[600] flex items-center justify-center p-4 backdrop-blur-md bg-slate-900/60">
+            <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl p-8 animate-in zoom-in-95 max-h-[90vh] overflow-y-auto custom-scrollbar">
+              <h3 className="text-xl font-black italic uppercase mb-6 text-green-700">Tambah {contentTypeToAdd}</h3>
+              <form onSubmit={handleAddContent} className="space-y-4">
+                <div onClick={() => contentImageInputRef.current?.click()} className="group relative w-full h-40 bg-slate-50 border-2 border-dashed rounded-2xl flex flex-col items-center justify-center cursor-pointer overflow-hidden border-slate-300 hover:border-green-500 transition-all">
+                    {newContent.image ? (
+                      <>
+                        <img src={newContent.image} className="w-full h-full object-cover" />
+                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-[10px] font-bold uppercase transition-opacity">Ganti Gambar</div>
+                      </>
+                    ) : (
+                      <div className="text-center">
+                        <Camera size={32} className="mx-auto mb-2 text-slate-300 group-hover:text-green-500" />
+                        <p className="text-[10px] font-black uppercase text-slate-400">Klik Unggah Foto</p>
+                      </div>
+                    )}
+                </div>
+                <input type="file" ref={contentImageInputRef} className="hidden" accept="image/*" onChange={(e) => {
+                   const file = e.target.files[0];
+                   if (file) {
+                      const reader = new FileReader();
+                      reader.onloadend = () => setNewContent({ ...newContent, image: reader.result });
+                      reader.readAsDataURL(file);
+                   }
+                }} />
+
+                <input required type="text" placeholder="Judul Konten" className="w-full bg-slate-100 rounded-xl px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 ring-green-600" value={newContent.title} onChange={(e) => setNewContent({...newContent, title: e.target.value})} />
+                
+                {contentTypeToAdd === 'agenda' && (
+                   <div className="flex gap-3">
+                      <input required type="date" className="flex-1 bg-slate-100 rounded-xl px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 ring-green-600" value={newContent.date} onChange={(e) => setNewContent({...newContent, date: e.target.value})} />
+                      <input placeholder="Kategori" className="flex-1 bg-slate-100 rounded-xl px-4 py-3 text-sm font-bold border-none outline-none focus:ring-2 ring-green-600" value={newContent.category} onChange={(e) => setNewContent({...newContent, category: e.target.value})} />
+                   </div>
+                )}
+                
+                <div className="relative">
+                   <textarea required rows={6} placeholder="Isi Konten" className="w-full bg-slate-100 rounded-xl px-4 py-3 text-sm font-bold resize-none border-none outline-none focus:ring-2 ring-green-600" value={newContent.body} onChange={(e) => setNewContent({...newContent, body: e.target.value})} />
+                   <button 
+                     type="button" 
+                     onClick={handleGenerateDraft} 
+                     disabled={isGeneratingDraft}
+                     className="absolute bottom-3 right-3 bg-white/80 backdrop-blur text-green-700 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase flex items-center gap-1.5 shadow-sm border border-green-200 hover:bg-green-50 transition-colors"
+                   >
+                     {isGeneratingDraft ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+                     {isGeneratingDraft ? 'Menulis...' : 'Bantu Tulis'}
+                   </button>
+                </div>
+                
+                <div className="flex gap-3 pt-4">
+                  <button type="button" onClick={() => setIsAddContentModalOpen(false)} className="flex-1 py-3 text-slate-400 font-bold text-sm uppercase tracking-widest">Batal</button>
+                  <button type="submit" className="flex-[2] py-3 bg-green-700 text-white rounded-xl font-bold text-sm uppercase tracking-widest shadow-lg shadow-green-100">Terbitkan</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* Member Modal */}
+        {isAddMemberModalOpen && (
+          <div className="fixed inset-0 z-[600] flex items-center justify-center p-4 backdrop-blur-md bg-slate-900/60">
+            <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl p-8 animate-in zoom-in-95">
+              <h3 className="text-xl font-black italic uppercase mb-6 text-green-700">Registrasi Baru</h3>
+              <form onSubmit={handleAddMember} className="space-y-4">
+                <div onClick={() => memberPhotoInputRef.current?.click()} className="w-20 h-20 bg-slate-50 border-2 border-dashed rounded-2xl mx-auto flex flex-col items-center justify-center cursor-pointer overflow-hidden border-slate-300">
+                    {newMember.photo ? <img src={newMember.photo} className="w-full h-full object-cover" /> : <Camera size={20} className="text-slate-300" />}
+                </div>
+                <input type="file" ref={memberPhotoInputRef} className="hidden" accept="image/*" onChange={(e) => {
+                   const file = e.target.files[0];
+                   if (file) {
+                      const reader = new FileReader();
+                      reader.onloadend = () => setNewMember({ ...newMember, photo: reader.result });
+                      reader.readAsDataURL(file);
+                   }
+                }} />
+                <input required type="text" placeholder="Nama Pesilat" className="w-full bg-slate-100 rounded-xl px-4 py-3 text-sm font-bold shadow-inner" value={newMember.name} onChange={(e) => setNewMember({...newMember, name: e.target.value})} />
+                <input required type="text" placeholder="Ketua DPW" className="w-full bg-slate-100 rounded-xl px-4 py-3 text-sm font-bold shadow-inner" value={newMember.chairmanName} onChange={(e) => setNewMember({...newMember, chairmanName: e.target.value})} />
+                <input required type="text" placeholder="Wilayah" className="w-full bg-slate-100 rounded-xl px-4 py-3 text-sm font-bold shadow-inner" value={newMember.region} onChange={(e) => setNewMember({...newMember, region: e.target.value})} />
+                <div className="flex gap-3 pt-2">
+                  <button type="button" onClick={() => setIsAddMemberModalOpen(false)} className="flex-1 py-3 text-slate-400 font-bold text-sm uppercase tracking-widest">Batal</button>
+                  <button type="submit" className="flex-[2] py-3 bg-green-700 text-white rounded-xl font-bold text-sm uppercase tracking-widest">Simpan</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* Login Modal */}
+        {isLoginModalOpen && (
+          <div className="fixed inset-0 z-[700] flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-sm">
+            <div className="bg-white p-8 rounded-3xl w-full max-w-xs text-center shadow-2xl relative">
+              <button onClick={() => setIsLoginModalOpen(false)} className="absolute top-4 right-4 text-slate-400 hover:text-red-500"><X size={20} /></button>
+              <div className="w-16 h-16 bg-green-700 rounded-2xl flex items-center justify-center mx-auto mb-6 text-white shadow-xl"><Lock size={32} /></div>
+              <h4 className="text-xl font-black italic uppercase mb-8">Masuk Admin</h4>
+              <form onSubmit={handleAdminLogin} className="space-y-4">
+                <input required type="password" placeholder="PIN" className="w-full bg-slate-100 border-none rounded-2xl px-5 py-4 text-center text-xl tracking-[1em] font-black outline-none" value={loginCode} onChange={(e) => setLoginCode(e.target.value)} />
+                <button type="submit" className="w-full py-4 bg-green-700 text-white rounded-2xl font-bold uppercase text-xs tracking-widest">Akses Sistem</button>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* Floating Chat */}
+        <button onClick={() => setIsChatOpen(!isChatOpen)} className={`fixed bottom-6 right-6 z-[300] p-4 rounded-full shadow-2xl transition-all active:scale-90 ${isChatOpen ? 'bg-slate-900 text-white' : 'bg-green-700 text-white'}`}>
+          {isChatOpen ? <X size={28} /> : <MessageCircle size={28} />}
+        </button>
+
+        <div className={`fixed bottom-24 right-6 w-[350px] max-w-[calc(100vw-3rem)] bg-white rounded-3xl shadow-2xl border z-[250] flex flex-col transition-all duration-300 transform ${isChatOpen ? 'scale-100 opacity-100 translate-y-0' : 'scale-90 opacity-0 translate-y-10 pointer-events-none'}`}>
+          <div className="bg-slate-900 p-4 rounded-t-3xl text-white flex items-center gap-3">
+            <Bot size={22} />
+            <h4 className="font-black italic uppercase text-xs tracking-wider">Asisten Cloud</h4>
+          </div>
+          <div className="h-80 overflow-y-auto p-4 space-y-4 text-xs custom-scrollbar">
+            {chatMessages.map((msg, i) => (
+              <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div className={`max-w-[85%] px-4 py-2 rounded-2xl ${msg.role === 'user' ? 'bg-green-700 text-white' : 'bg-slate-100 text-slate-700'} leading-relaxed`}>
+                  {msg.text}
+                </div>
+              </div>
+            ))}
+            <div ref={chatEndRef} />
+          </div>
+          <form onSubmit={(e) => { e.preventDefault(); sendMessageToAI(chatInput); }} className="p-3 bg-white border-t rounded-b-3xl flex gap-2">
+            <input type="text" placeholder="Ketik pesan..." className="flex-1 bg-slate-100 text-xs rounded-xl px-3 outline-none" value={chatInput} onChange={(e) => setChatInput(e.target.value)} />
+            <button type="submit" className="p-2 bg-green-700 text-white rounded-xl disabled:opacity-50" disabled={isChatLoading}><Send size={14} /></button>
+          </form>
+        </div>
+      </div>
+
+      <style>{`
+        .perspective-1000 { perspective: 1000px; }
+        .backface-hidden { backface-visibility: hidden; }
+        .preserve-3d { transform-style: preserve-3d; }
+        .rotate-y-180 { transform: rotateY(180deg); }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        .prose p { margin-bottom: 1.25rem; }
+      `}</style>
+    </div>
+  );
+};
+
+export default App;
+
+
